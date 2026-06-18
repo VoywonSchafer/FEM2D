@@ -36677,7 +36677,15 @@ XˆHÜèÅ’ç÷ûpß#höoq‹j(~ÏÞ¬k6bmÃ—åš†ü‚,Lž2Á\PfÍ\ŠÛŒä…jË—™ÉËä»ü¶‘Õë<‘%<lybR 
                 canvas.addEventListener("webglcontextlost", function(e) { alert('WebGL context lost. You will need to reload the page.'); e.preventDefault(); }, false);
 
                 return canvas;
-            })()
+            })(),
+            __meshWorkerAlive: 0,
+            __meshWorkerHandle: null,
+            __meshWorkerChunks: [],
+            __meshWorkerQueuedBytes: 0,
+            __analysisWorkerAlive: 0,
+            __analysisWorkerHandle: null,
+            __analysisWorkerChunks: [],
+            __analysisWorkerQueuedBytes: 0
         };
     </script>
     
@@ -36694,11 +36702,13 @@ Module.locateFile = function(path, prefix) {
 };
 
 function __meshWorkerHandleMessage(e) {
+  console.log("Worker: received message", e?.data?.type);
   if (!e || !e.data) {
     return;
   }
 
   if (e.data.type === "cancel") {
+    console.log("Worker: canceling job");
     close();
     return;
   }
@@ -36708,25 +36718,47 @@ function __meshWorkerHandleMessage(e) {
   }
 
   if (!self.__meshWorkerRuntimeReady) {
+    console.log("Worker: runtime not ready, queuing job");
     self.__meshWorkerQueuedJob = e.data.bytes;
     return;
   }
 
+  console.log("Worker: starting job execution");
   __meshWorkerRunJob(e.data.bytes);
 }
 
 function __meshWorkerRunJob(jobBytes) {
   try {
     const bytes = new Uint8Array(jobBytes);
+    console.log("Worker: runJob, bytes length:", bytes.length);
+    
+    // Check if Module._malloc exists
+    if (typeof Module._malloc !== 'function') {
+      throw new Error('Mesh worker runtime error: Module._malloc is not defined.');
+    }
+
+    // Determine which HEAPU8 to use
+    let heap = null;
+    if (typeof HEAPU8 !== 'undefined') heap = HEAPU8;
+    else if (Module && Module.HEAPU8) heap = Module.HEAPU8;
+
+    if (!heap) {
+      console.log("Worker: Module keys:", Object.keys(Module));
+      throw new Error('Mesh worker runtime error: HEAPU8 is not defined.');
+    }
+
     const ptr = Module._malloc(bytes.length);
     if (!ptr) {
       throw new Error("_malloc returned null");
     }
 
-    Module.HEAPU8.set(bytes, ptr);
+    heap.set(bytes, ptr);
+    console.log("Worker: calling _MeshWorker_HandleFrame");
     Module._MeshWorker_HandleFrame(ptr, bytes.length);
+    console.log("Worker: _MeshWorker_HandleFrame finished");
     Module._free(ptr);
   } catch (error) {
+    console.error("Worker: error in runJob", error);
     postMessage({
       type: "error",
       message: error && error.stack ? error.stack : String(error)
@@ -36739,11 +36771,13 @@ if (!self.__meshWorkerHandlersInstalled) {
   self.__meshWorkerHandlersInstalled = true;
   self.__meshWorkerRuntimeReady = false;
   self.addEventListener("message", __meshWorkerHandleMessage);
+  console.log("Worker: script loaded, handlers installed");
   postMessage({ type: "script-loaded" });
 }
 
 var __meshWorkerPreviousRuntimeInitialized = Module.onRuntimeInitialized;
 Module.onRuntimeInitialized = function() {
+  console.log("Worker: runtime initialized");
   if (typeof __meshWorkerPreviousRuntimeInitialized === "function") {
     __meshWorkerPreviousRuntimeInitialized();
   }
@@ -36752,6 +36786,7 @@ Module.onRuntimeInitialized = function() {
   postMessage({ type: "ready" });
 
   if (self.__meshWorkerQueuedJob) {
+    console.log("Worker: running queued job");
     const queuedJob = self.__meshWorkerQueuedJob;
     self.__meshWorkerQueuedJob = null;
     __meshWorkerRunJob(queuedJob);
